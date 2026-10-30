@@ -1,0 +1,75 @@
+name: Review preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_marker:
+        description: Include the course marker for initial review
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  actions: write
+
+concurrency:
+  group: review-preview
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: '12.11.2'
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/configure-pages@v5
+      - name: Capture the digest as one HTML file
+        env:
+          LANE_MARKER: ${{ inputs.include_marker && secrets.LANE_MARKER || '' }}
+          INCLUDE_MARKER: ${{ inputs.include_marker }}
+        run: |
+          set -euo pipefail
+          if [ "$INCLUDE_MARKER" = true ] && [ -z "$LANE_MARKER" ]; then
+            echo "The course marker is not configured." >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/rig-preview"
+          pnpm exec tsx -e 'import { serve } from "@hono/node-server"; import { createApp } from "./src/app.tsx"; serve({ fetch: createApp().fetch, port: 8794, hostname: "127.0.0.1" });' > "$RUNNER_TEMP/rig-server.log" 2>&1 &
+          rig_pid=$!
+          trap 'kill "$rig_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8794/digest/2026-10-28 --output "$RUNNER_TEMP/rig-preview/index.html"; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo 'The digest server did not become ready.' >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          test -s "$RUNNER_TEMP/rig-preview/index.html"
+      - uses: actions/upload-pages-artifact@v5.0.0
+        id: upload
+        with:
+          path: ${{ runner.temp }}/rig-preview
+          retention-days: 1
+      - uses: actions/deploy-pages@v5.0.1
+        id: deploy
+      - name: Delete the temporary HTML artifact
+        if: ${{ always() && steps.upload.outputs.artifact_id }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact_id }}
+        run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
