@@ -20,6 +20,14 @@ export function createApp(config: RigConfig = loadConfig()) {
     return c.html(<Layout title={`digest ${night}`} lane={lane()}><DigestPage night={night} digest={digest} /></Layout>);
   });
 
+  app.get('/api/digest/:night', async (c) => {
+    const night = c.req.param('night');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(night)) return c.json({ error: 'Not found' }, 404);
+    const digest = await readNight(config.runsDir, night);
+    if (digest.state === 'missing') return c.json({ error: 'Not found' }, 404);
+    return c.json(digest);
+  });
+
   app.get('/', (c) =>
     c.html(
       <Layout title="status" lane={lane()}>
